@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:      #0f172a;
+  --card:    #1e293b;
+  --border:  #334155;
+  --green:   #22c55e;
+  --text:    #e2e8f0;
+  --muted:   #94a3b8;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  scroll-behavior: smooth;
+}
+
+/* Scrollbar personalizado */
+::-webkit-scrollbar        { width: 8px; }
+::-webkit-scrollbar-track  { background: #0f172a; }
+::-webkit-scrollbar-thumb  { background: #334155; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Selección de texto */
+::selection { background: #22c55e33; color: #22c55e; }
+
+/* Bloques de código */
+.code-block {
+  font-family: 'JetBrains Mono', monospace;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #7dd3fc;
+  white-space: pre-wrap;
+}
+
+/* Botones */
+.btn-primary {
+  @apply bg-green-500 hover:bg-green-600 text-black font-bold py-3 px-6 rounded-lg
+         transition-all duration-200 flex items-center gap-2 cursor-pointer;
+}
+.btn-secondary {
+  @apply bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium py-3 px-6 rounded-lg
+         transition-all duration-200 flex items-center gap-2 cursor-pointer;
+}
+.btn-danger {
+  @apply bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg
+         transition-all duration-200 flex items-center gap-2 cursor-pointer;
+}
+
+/* Cards */
+.card {
+  @apply bg-slate-800 border border-slate-700 rounded-xl p-6;
+}
+
+/* Inputs */
+.input-field {
+  @apply w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3
+         text-slate-100 placeholder-slate-500
+         focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500
+         transition-all duration-200;
+  font-family: 'Inter', sans-serif;
+}
+
+/* Badge */
+.badge {
+  @apply inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-mono font-semibold;
+}
+
+/* Animación fade in */
+.animate-fade-in { animation: fadeIn 0.4s ease-in-out; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
