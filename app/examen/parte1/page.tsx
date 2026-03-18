@@ -69,7 +69,7 @@ export default function Parte1Page() {
       alert('Error al enviar. Intenta de nuevo.');
       setEnviando(false);
     }
-  }, [alumnoId, respuestas, router]);
+  }, [respuestas, router]);
 
   const handleTimeUp = useCallback(() => {
     alert('⏰ El tiempo se agotó. Tu Parte I se enviará automáticamente.');
