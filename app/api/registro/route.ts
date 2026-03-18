@@ -26,29 +26,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Verificar duplicado (email ya registrado)
-    const { data: existente } = await supabaseAdmin
+    // ──── MEJORA 1: Bloqueo robusto de duplicados ────────────────────
+    // Verificar por email
+    const { data: porEmail } = await supabaseAdmin
       .from('alumnos')
       .select('id, estado')
       .eq('email', email.toLowerCase().trim())
       .maybeSingle();
 
-    if (existente) {
+    if (porEmail) {
+      // Si ya finalizó, bloquear por completo
+      if (porEmail.estado === 'finalizado') {
+        return NextResponse.json(
+          { error: 'Ya completaste el examen con este correo. No puedes presentarlo de nuevo.' },
+          { status: 409 }
+        );
+      }
+      // Si está en progreso, permitir retomar (reconexión)
+      return NextResponse.json({
+        alumno_id: porEmail.id,
+        reconexion: true,
+        estado: porEmail.estado,
+        mensaje: 'Reconectado a tu sesión existente.',
+      }, { status: 200 });
+    }
+
+    // Verificar por IP (máximo 2 exámenes por IP para evitar abuso)
+    const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'unknown';
+    const ipLimpia = ip.split(',')[0].trim();
+
+    const { count: examenesPorIP } = await supabaseAdmin
+      .from('alumnos')
+      .select('id', { count: 'exact', head: true })
+      .eq('ip_address', ipLimpia);
+
+    if ((examenesPorIP ?? 0) >= 3) {
       return NextResponse.json(
-        { error: 'Ya existe un registro con este correo. Solo puedes presentar el examen una vez.' },
-        { status: 409 }
+        { error: 'Se ha alcanzado el límite de registros desde esta computadora. Consulta al profesor.' },
+        { status: 429 }
       );
     }
 
     // Registrar alumno
-    const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'unknown';
     const { data: alumno, error } = await supabaseAdmin
       .from('alumnos')
       .insert({
         nombre: nombre.trim(),
         grupo:  grupo.trim(),
         email:  email.toLowerCase().trim(),
-        ip_address: ip.split(',')[0].trim(),
+        ip_address: ipLimpia,
         fecha_inicio: new Date().toISOString(),
       })
       .select('id')

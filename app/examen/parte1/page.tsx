@@ -1,7 +1,8 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Timer from '@/components/Timer';
+import ExamGuard from '@/components/ExamGuard';
 
 type PreguntaExamen = {
   examen_id: number;
@@ -15,40 +16,123 @@ type PreguntaExamen = {
 
 export default function Parte1Page() {
   const router = useRouter();
-  const [preguntas, setPreguntas] = useState<PreguntaExamen[]>([]);
-  const [respuestas, setRespuestas] = useState<Record<number, string>>({});
-  const [enviando, setEnviando] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [confirmando, setConfirmando] = useState(false);
+  const [preguntas, setPreguntas]       = useState<PreguntaExamen[]>([]);
+  const [respuestas, setRespuestas]     = useState<Record<number, string>>({});
+  const [enviando, setEnviando]         = useState(false);
+  const [loading, setLoading]           = useState(true);
+  const [confirmando, setConfirmando]   = useState(false);
   const [preguntaActual, setPreguntaActual] = useState(0);
+  // ── Mejora 2: alertas de foco ──
+  const [alertaFoco, setAlertaFoco]     = useState(0);
+  // ── Mejora 3: estado de auto-guardado ──
+  const [ultimoGuardado, setUltimoGuardado] = useState<string | null>(null);
+  const [guardando, setGuardando]       = useState(false);
+  // ── Mejora 1: timer real del servidor ──
+  const [tiempoInicial, setTiempoInicial]   = useState(90);
+  const respuestasRef = useRef(respuestas);
+  respuestasRef.current = respuestas;
 
+  // ────────────────────────────────────────────────────────────────────
+  // CARGA INICIAL: verificar estado del alumno + cargar preguntas
+  // ────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const alumnoId = sessionStorage.getItem('alumno_id');
     if (!alumnoId) { router.push('/'); return; }
 
-    fetch(`/api/examen/preguntas?alumno_id=${alumnoId}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.preguntas) {
-          setPreguntas(data.preguntas);
-          // Restaurar respuestas guardadas si las hay
-          const guardadas = sessionStorage.getItem('respuestas_p1');
-          if (guardadas) setRespuestas(JSON.parse(guardadas));
+    // Mejora 1: verificar que el alumno puede estar aquí
+    const verificarEstado = async () => {
+      try {
+        const estadoRes = await fetch(`/api/examen/estado?alumno_id=${alumnoId}`);
+        const estadoData = await estadoRes.json();
+
+        if (estadoData.estado === 'finalizado') {
+          alert('Ya finalizaste el examen. No puedes presentarlo de nuevo.');
+          router.push('/resultados');
+          return false;
         }
-        setLoading(false);
-      });
+        if (estadoData.estado === 'parte1_enviada') {
+          router.push('/examen/parte2');
+          return false;
+        }
+        if (estadoData.tiempo_agotado) {
+          alert('Tu tiempo ha expirado.');
+          router.push('/resultados');
+          return false;
+        }
+        // Timer sincronizado con servidor
+        setTiempoInicial(Math.ceil(estadoData.segundos_restantes / 60));
+        return true;
+      } catch {
+        return true; // si falla la verificación, continuar
+      }
+    };
+
+    verificarEstado().then(async (puedeEntrar) => {
+      if (!puedeEntrar) return;
+
+      const res = await fetch(`/api/examen/preguntas?alumno_id=${alumnoId}`);
+      const data = await res.json();
+      if (data.preguntas) {
+        setPreguntas(data.preguntas);
+        // Restaurar respuestas: primero del servidor, luego de sessionStorage
+        const guardadasServer: Record<number, string> = {};
+        data.preguntas.forEach((p: { examen_id: number; respuesta_alumno: string | null }) => {
+          if (p.respuesta_alumno) guardadasServer[p.examen_id] = p.respuesta_alumno;
+        });
+        const guardadasLocal = sessionStorage.getItem('respuestas_p1');
+        const locales = guardadasLocal ? JSON.parse(guardadasLocal) : {};
+        // Merge: servidor tiene prioridad, locales rellenan si hay algo nuevo
+        setRespuestas({ ...guardadasServer, ...locales });
+      }
+      setLoading(false);
+    });
   }, [router]);
 
+  // ────────────────────────────────────────────────────────────────────
+  // MEJORA 3: AUTO-GUARDADO cada 30 segundos
+  // ────────────────────────────────────────────────────────────────────
+  const autoGuardar = useCallback(async () => {
+    const alumnoId = sessionStorage.getItem('alumno_id');
+    if (!alumnoId) return;
+    const resps = respuestasRef.current;
+    if (Object.keys(resps).length === 0) return;
+
+    setGuardando(true);
+    try {
+      const res = await fetch('/api/examen/auto-guardar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alumno_id: alumnoId, respuestas: resps }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUltimoGuardado(new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }));
+      }
+    } catch { /* silencioso */ }
+    setGuardando(false);
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(autoGuardar, 30000); // cada 30 seg
+    return () => clearInterval(interval);
+  }, [autoGuardar]);
+
+  // ────────────────────────────────────────────────────────────────────
+  // SELECCIONAR OPCIÓN
+  // ────────────────────────────────────────────────────────────────────
   const seleccionar = (examenId: number, opcion: string) => {
     const nuevas = { ...respuestas, [examenId]: opcion };
     setRespuestas(nuevas);
     sessionStorage.setItem('respuestas_p1', JSON.stringify(nuevas));
   };
 
-  const respondidas   = Object.keys(respuestas).length;
-  const porcentaje    = preguntas.length ? Math.round((respondidas / preguntas.length) * 100) : 0;
+  const respondidas      = Object.keys(respuestas).length;
+  const porcentaje       = preguntas.length ? Math.round((respondidas / preguntas.length) * 100) : 0;
   const todasRespondidas = respondidas === preguntas.length;
 
+  // ────────────────────────────────────────────────────────────────────
+  // ENVIAR PARTE I
+  // ────────────────────────────────────────────────────────────────────
   const enviarParte1 = useCallback(async () => {
     const alumnoId = sessionStorage.getItem('alumno_id');
     if (!alumnoId) return;
@@ -72,14 +156,22 @@ export default function Parte1Page() {
   }, [respuestas, router]);
 
   const handleTimeUp = useCallback(() => {
-    alert('⏰ El tiempo se agotó. Tu Parte I se enviará automáticamente.');
+    alert('El tiempo se agotó. Tu Parte I se enviará automáticamente.');
     enviarParte1();
   }, [enviarParte1]);
 
+  // ── Mejora 2: callback cuando pierde foco ──
+  const handleFocusLost = useCallback(() => {
+    setAlertaFoco(prev => prev + 1);
+  }, []);
+
+  // ────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ────────────────────────────────────────────────────────────────────
   if (loading) return (
     <div className="flex items-center justify-center min-h-[60vh]">
       <div className="text-center">
-        <div className="text-4xl animate-spin mb-4">⟳</div>
+        <div className="text-4xl animate-spin mb-4">&#10227;</div>
         <p className="text-slate-400 font-mono">Cargando preguntas...</p>
       </div>
     </div>
@@ -95,7 +187,26 @@ export default function Parte1Page() {
 
   return (
     <div className="animate-fade-in max-w-4xl mx-auto pb-24">
-      <Timer duracionMinutos={90} onTimeUp={handleTimeUp} />
+      {/* Mejora 2: guardia anti-cheating */}
+      <ExamGuard activo={true} onIntentoCopia={handleFocusLost} />
+
+      {/* Timer sincronizado con servidor */}
+      <Timer duracionMinutos={tiempoInicial} onTimeUp={handleTimeUp} />
+
+      {/* Mejora 2: alerta de cambio de ventana */}
+      {alertaFoco > 0 && (
+        <div className="fixed top-16 left-4 z-50 card border-2 border-red-500 bg-red-900/30 max-w-xs animate-fade-in">
+          <div className="flex items-center gap-2 text-red-400 text-sm">
+            <span className="text-lg">🚨</span>
+            <div>
+              <p className="font-bold">Cambio de ventana detectado</p>
+              <p className="text-red-400/70 text-xs">
+                Se han registrado {alertaFoco} salida(s). Esto queda registrado.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -107,9 +218,21 @@ export default function Parte1Page() {
             {respondidas}/{preguntas.length} respondidas · {porcentaje}% completado
           </p>
         </div>
-        <span className="badge bg-blue-500/10 text-blue-400 border border-blue-500/30 text-sm">
-          Pregunta {preguntaActual + 1} de {preguntas.length}
-        </span>
+        <div className="text-right">
+          <span className="badge bg-blue-500/10 text-blue-400 border border-blue-500/30 text-sm">
+            Pregunta {preguntaActual + 1} de {preguntas.length}
+          </span>
+          {/* Mejora 3: indicador de auto-guardado */}
+          <p className="text-xs mt-1 font-mono">
+            {guardando ? (
+              <span className="text-yellow-400">&#10227; Guardando...</span>
+            ) : ultimoGuardado ? (
+              <span className="text-green-500/60">Guardado {ultimoGuardado}</span>
+            ) : (
+              <span className="text-slate-600">Auto-guardado activo</span>
+            )}
+          </p>
+        </div>
       </div>
 
       {/* Barra de progreso */}
@@ -163,7 +286,7 @@ export default function Parte1Page() {
           disabled={preguntaActual === 0}
           className="btn-secondary disabled:opacity-30"
         >
-          ← Anterior
+          &#8592; Anterior
         </button>
 
         {/* Mini-mapa de progreso */}
@@ -190,15 +313,15 @@ export default function Parte1Page() {
           disabled={preguntaActual === preguntas.length - 1}
           className="btn-secondary disabled:opacity-30"
         >
-          Siguiente →
+          Siguiente &#8594;
         </button>
       </div>
 
       {/* Aviso sin responder */}
       {!todasRespondidas && (
         <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-3 mb-4 text-yellow-400/80 text-sm flex gap-2">
-          <span>⚠️</span>
-          <span>Tienes {preguntas.length - respondidas} pregunta(s) sin responder. Puedes enviar sin responderlas, pero recibirán 0 puntos.</span>
+          <span>&#9888;&#65039;</span>
+          <span>Tienes {preguntas.length - respondidas} pregunta(s) sin responder. Puedes enviar sin responderlas, pero recibir&aacute;n 0 puntos.</span>
         </div>
       )}
 
@@ -209,11 +332,11 @@ export default function Parte1Page() {
           disabled={enviando}
           className="btn-primary w-full justify-center py-4 text-lg"
         >
-          📤 Enviar Parte I
+          Enviar Parte I
         </button>
       ) : (
         <div className="card border-yellow-500/40 bg-yellow-900/10">
-          <p className="text-yellow-300 font-semibold mb-2">⚠️ ¿Estás seguro?</p>
+          <p className="text-yellow-300 font-semibold mb-2">&#9888;&#65039; ¿Estás seguro?</p>
           <p className="text-slate-400 text-sm mb-4">
             Una vez enviada la Parte I, <strong className="text-white">NO podrás modificar ninguna respuesta</strong>.
             {!todasRespondidas && (
@@ -222,10 +345,10 @@ export default function Parte1Page() {
           </p>
           <div className="flex gap-3">
             <button onClick={enviarParte1} disabled={enviando} className="btn-primary flex-1 justify-center">
-              {enviando ? '⟳ Enviando...' : '✅ Confirmar envío'}
+              {enviando ? 'Enviando...' : 'Confirmar envio'}
             </button>
             <button onClick={() => setConfirmando(false)} className="btn-secondary flex-1 justify-center">
-              ← Revisar
+              &#8592; Revisar
             </button>
           </div>
         </div>
