@@ -4,3 +4,8 @@ node_modules
 .next
 out
 dist
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+.next
+node_modules
+.env.local

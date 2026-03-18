@@ -135,22 +135,40 @@ export default function Parte1Page() {
   // ────────────────────────────────────────────────────────────────────
   const enviarParte1 = useCallback(async () => {
     const alumnoId = sessionStorage.getItem('alumno_id');
-    if (!alumnoId) return;
+    if (!alumnoId) { alert('No se encontró tu sesión. Regresa al inicio.'); return; }
     setEnviando(true);
     try {
+      const payload = { alumno_id: alumnoId, respuestas };
+      console.log('[enviarParte1] payload:', JSON.stringify(payload).slice(0, 200));
+
       const res = await fetch('/api/examen/enviar-parte1', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alumno_id: alumnoId, respuestas }),
+        body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) { alert(data.error); setEnviando(false); return; }
+
+      const texto = await res.text();
+      console.log('[enviarParte1] status:', res.status, 'body:', texto);
+
+      let data;
+      try { data = JSON.parse(texto); } catch {
+        alert('Error del servidor (respuesta no válida): ' + texto.slice(0, 150));
+        setEnviando(false);
+        return;
+      }
+
+      if (!res.ok) {
+        alert('Error (' + res.status + '): ' + (data.error || data.detalle || texto.slice(0, 150)));
+        setEnviando(false);
+        return;
+      }
 
       sessionStorage.setItem('parte1_calif', data.calificacion);
       sessionStorage.setItem('parte1_correctas', data.correctas);
       router.push('/examen/parte2');
-    } catch {
-      alert('Error al enviar. Intenta de nuevo.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert('Error de red al enviar: ' + msg);
       setEnviando(false);
     }
   }, [respuestas, router]);

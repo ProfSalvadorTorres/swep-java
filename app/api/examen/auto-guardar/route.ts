@@ -22,24 +22,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Parte I ya enviada.' }, { status: 409 });
     }
 
-    // Guardar cada respuesta individualmente
+    // Guardar cada respuesta con UPDATE individual (no upsert)
     const entries = Object.entries(respuestas);
     if (entries.length === 0) {
       return NextResponse.json({ guardadas: 0 });
     }
 
-    const updates = entries.map(([examenId, resp]) => ({
-      id: parseInt(examenId),
-      respuesta_alumno: resp as string,
-    }));
+    let guardadas = 0;
+    for (const [examenId, resp] of entries) {
+      const { error } = await supabaseAdmin
+        .from('examenes_alumno')
+        .update({ respuesta_alumno: resp as string })
+        .eq('id', parseInt(examenId));
 
-    const { error } = await supabaseAdmin
-      .from('examenes_alumno')
-      .upsert(updates, { onConflict: 'id' });
+      if (!error) guardadas++;
+    }
 
-    if (error) throw error;
-
-    return NextResponse.json({ guardadas: entries.length, timestamp: new Date().toISOString() });
+    return NextResponse.json({ guardadas, timestamp: new Date().toISOString() });
   } catch (err) {
     console.error('[auto-guardar]', err);
     return NextResponse.json({ error: 'Error al guardar.' }, { status: 500 });

@@ -2,112 +2,162 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
 export async function POST(req: NextRequest) {
+  // ── Paso 0: leer el body ──
+  let body: { alumno_id?: string; respuestas?: Record<string, string> };
   try {
-    const { alumno_id, respuestas } = await req.json();
-    // respuestas: { [examen_id]: 'a'|'b'|'c'|'d' }
+    body = await req.json();
+  } catch (e) {
+    return NextResponse.json(
+      { error: 'Body JSON inválido.', detalle: String(e) },
+      { status: 400 }
+    );
+  }
 
-    if (!alumno_id) return NextResponse.json({ error: 'alumno_id requerido.' }, { status: 400 });
+  const { alumno_id, respuestas } = body;
+  if (!alumno_id) {
+    return NextResponse.json({ error: 'alumno_id requerido.' }, { status: 400 });
+  }
+  if (!respuestas || typeof respuestas !== 'object') {
+    return NextResponse.json({ error: 'respuestas requerido (objeto).', detalle: typeof respuestas }, { status: 400 });
+  }
 
-    // Verificar que el alumno puede enviar (no enviado ya)
+  try {
+    // ── Paso 1: verificar alumno ──
     const { data: alumno, error: errAlumno } = await supabaseAdmin
-      .from('alumnos').select('estado').eq('id', alumno_id).single();
+      .from('alumnos')
+      .select('id, estado')
+      .eq('id', alumno_id)
+      .single();
 
-    if (errAlumno || !alumno) {
-      console.error('[enviar-parte1] alumno no encontrado:', errAlumno);
+    if (errAlumno) {
+      return NextResponse.json(
+        { error: 'Error al buscar alumno.', detalle: errAlumno.message, code: errAlumno.code },
+        { status: 500 }
+      );
+    }
+    if (!alumno) {
       return NextResponse.json({ error: 'Alumno no encontrado.' }, { status: 404 });
     }
-
     if (alumno.estado === 'parte1_enviada' || alumno.estado === 'finalizado') {
-      return NextResponse.json({ error: 'La Parte I ya fue enviada.' }, { status: 409 });
+      return NextResponse.json({ error: 'La Parte I ya fue enviada anteriormente.' }, { status: 409 });
     }
 
-    // ── Paso 1: obtener las preguntas asignadas al alumno ──
+    // ── Paso 2: obtener preguntas asignadas ──
     const { data: examData, error: errExam } = await supabaseAdmin
       .from('examenes_alumno')
       .select('id, pregunta_id')
       .eq('alumno_id', alumno_id);
 
-    if (errExam || !examData || examData.length === 0) {
-      console.error('[enviar-parte1] examData error:', errExam, 'filas:', examData?.length);
-      return NextResponse.json({ error: 'No se encontraron preguntas del examen.' }, { status: 404 });
+    if (errExam) {
+      return NextResponse.json(
+        { error: 'Error al obtener examen.', detalle: errExam.message, code: errExam.code },
+        { status: 500 }
+      );
+    }
+    if (!examData || examData.length === 0) {
+      return NextResponse.json(
+        { error: 'No tienes preguntas asignadas. ¿Generaste tu examen?', filas: 0 },
+        { status: 404 }
+      );
     }
 
-    // ── Paso 2: obtener las respuestas correctas de la tabla preguntas ──
-    const preguntaIds = examData.map((row: { pregunta_id: number }) => row.pregunta_id);
+    // ── Paso 3: obtener respuestas correctas ──
+    const preguntaIds = examData.map((r) => r.pregunta_id);
     const { data: preguntasData, error: errPreg } = await supabaseAdmin
       .from('preguntas')
       .select('id, respuesta_correcta')
       .in('id', preguntaIds);
 
-    if (errPreg || !preguntasData) {
-      console.error('[enviar-parte1] preguntas error:', errPreg);
-      return NextResponse.json({ error: 'Error al obtener respuestas correctas.' }, { status: 500 });
+    if (errPreg) {
+      return NextResponse.json(
+        { error: 'Error al obtener respuestas correctas.', detalle: errPreg.message },
+        { status: 500 }
+      );
+    }
+    if (!preguntasData || preguntasData.length === 0) {
+      return NextResponse.json(
+        { error: 'No se encontraron preguntas en el banco.', preguntaIds: preguntaIds.slice(0, 5) },
+        { status: 500 }
+      );
     }
 
-    // Crear mapa de pregunta_id → respuesta_correcta (trimmed por si CHAR tiene espacios)
+    // Mapa: pregunta_id → respuesta correcta (trim por si CHAR tiene espacios)
     const mapaCorrectas: Record<number, string> = {};
-    preguntasData.forEach((p: { id: number; respuesta_correcta: string }) => {
-      mapaCorrectas[p.id] = p.respuesta_correcta.trim();
-    });
+    for (const p of preguntasData) {
+      mapaCorrectas[p.id] = typeof p.respuesta_correcta === 'string'
+        ? p.respuesta_correcta.trim().toLowerCase()
+        : '';
+    }
 
-    // ── Paso 3: calificar cada pregunta ──
+    // ── Paso 4: calificar ──
     let correctas = 0;
     const totalPreguntas = examData.length;
+    const erroresUpdate: string[] = [];
 
-    const updates = examData.map((row: { id: number; pregunta_id: number }) => {
-      const respAlumno = respuestas[String(row.id)] ?? respuestas[row.id] ?? null;
-      const correcta = mapaCorrectas[row.pregunta_id];
-      const esCorrecta = respAlumno != null && correcta != null && respAlumno.trim() === correcta;
+    for (const row of examData) {
+      // Las keys de respuestas siempre son strings en JSON
+      const respAlumno = respuestas[String(row.id)] ?? null;
+      const correcta = mapaCorrectas[row.pregunta_id] ?? '';
+      const respTrimmed = respAlumno ? respAlumno.trim().toLowerCase() : '';
+      const esCorrecta = respTrimmed !== '' && respTrimmed === correcta;
       if (esCorrecta) correctas++;
-      return {
-        id: row.id,
-        respuesta_alumno: respAlumno,
-        es_correcta: respAlumno ? esCorrecta : false,
-      };
-    });
 
-    // ── Paso 4: guardar calificaciones por pregunta ──
-    // Actualizar una por una para evitar problemas con upsert y columnas NOT NULL
-    for (const upd of updates) {
+      // Actualizar fila en examenes_alumno
       const { error: errUpd } = await supabaseAdmin
         .from('examenes_alumno')
         .update({
-          respuesta_alumno: upd.respuesta_alumno,
-          es_correcta: upd.es_correcta,
+          respuesta_alumno: respAlumno,
+          es_correcta: esCorrecta,
         })
-        .eq('id', upd.id);
+        .eq('id', row.id);
 
       if (errUpd) {
-        console.error('[enviar-parte1] error actualizando fila', upd.id, errUpd);
+        erroresUpdate.push(`fila ${row.id}: ${errUpd.message}`);
       }
     }
 
-    // ── Paso 5: calcular calificación Parte I sobre 5.0 ──
+    // ── Paso 5: calcular calificación sobre 5.0 ──
     const calif = parseFloat(((correctas / totalPreguntas) * 5).toFixed(2));
 
-    // ── Paso 6: actualizar resultados ──
+    // ── Paso 6: actualizar tabla resultados ──
     const { error: errRes } = await supabaseAdmin
       .from('resultados')
       .update({
-        parte1_correctas:    correctas,
-        parte1_total:        totalPreguntas,
+        parte1_correctas: correctas,
+        parte1_total: totalPreguntas,
         parte1_calificacion: calif,
       })
       .eq('alumno_id', alumno_id);
 
-    if (errRes) console.error('[enviar-parte1] error resultados:', errRes);
+    if (errRes) {
+      console.error('[enviar-parte1] error resultados:', errRes);
+      // No fallar aquí, la calificación ya se calculó
+    }
 
-    // ── Paso 7: actualizar estado alumno ──
+    // ── Paso 7: actualizar estado del alumno ──
     const { error: errEst } = await supabaseAdmin
       .from('alumnos')
       .update({ estado: 'parte1_enviada' })
       .eq('id', alumno_id);
 
-    if (errEst) console.error('[enviar-parte1] error estado:', errEst);
+    if (errEst) {
+      console.error('[enviar-parte1] error estado:', errEst);
+    }
 
-    return NextResponse.json({ correctas, total: totalPreguntas, calificacion: calif });
-  } catch (err) {
-    console.error('[enviar-parte1] error general:', err);
-    return NextResponse.json({ error: 'Error al calificar la Parte I.' }, { status: 500 });
+    return NextResponse.json({
+      correctas,
+      total: totalPreguntas,
+      calificacion: calif,
+      ...(erroresUpdate.length > 0 ? { advertencias: erroresUpdate.length } : {}),
+    });
+
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : '';
+    console.error('[enviar-parte1] error general:', msg, stack);
+    return NextResponse.json(
+      { error: 'Error interno al calificar.', detalle: msg },
+      { status: 500 }
+    );
   }
 }
